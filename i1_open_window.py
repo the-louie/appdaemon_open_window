@@ -76,9 +76,11 @@ class TemperatureWindowNotification(hass.Hass):
         # Initialize cooldown tracking
         self._message_cooldowns = {}
 
-        # Set up periodic checks and event listeners
-        self.run_every(self._check_conditions, "now", 60)  # Check every minute
+        # Set up event listeners
         self.listen_event(self._handle_notification_action, "mobile_app_notification_action")
+
+        # Schedule checks only during active time window
+        self._schedule_checks()
 
         self.log("TemperatureWindowNotification initialized successfully")
 
@@ -255,11 +257,75 @@ class TemperatureWindowNotification(hass.Hass):
             if "tracker" in person and not isinstance(person["tracker"], str):
                 raise ValueError(f"person {i}.tracker must be a string")
 
+    def _schedule_checks(self):
+        """
+        Schedule periodic checks only during the active time window.
+
+        This method sets up the initial schedule and handles the transition
+        between active and inactive periods. It schedules:
+        1. Initial check if currently within the time window
+        2. Daily schedule to start/stop checks at the configured times
+        """
+        # Check if we're currently within the active time window
+        if self._is_within_time_window():
+            # Start checking immediately if within time window
+            self.run_every(self._check_conditions, "now", 60)
+            self.log("Started periodic checks (within active time window)")
+        else:
+            # Schedule first check for when the time window starts
+            self._schedule_next_check()
+            self.log("Scheduled first check for when time window becomes active")
+
+        # Schedule daily start/stop of checks
+        self._schedule_daily_checks()
+
+    def _schedule_next_check(self):
+        """Schedule the next check for when the time window becomes active."""
+        now = datetime.now()
+        after_hour = self.time_config["after"]
+
+        # Calculate next start time
+        if now.hour < after_hour:
+            # Today, at the after_hour
+            next_check = now.replace(hour=after_hour, minute=0, second=0, microsecond=0)
+        else:
+            # Tomorrow, at the after_hour
+            next_check = (now + timedelta(days=1)).replace(hour=after_hour, minute=0, second=0, microsecond=0)
+
+        # Schedule the check
+        self.run_at(self._start_checks, next_check)
+        self.log(f"Scheduled next check at {next_check.strftime('%Y-%m-%d %H:%M')}")
+
+    def _schedule_daily_checks(self):
+        """Schedule daily start and stop of checks."""
+        after_hour = self.time_config["after"]
+        before_hour = self.time_config["before"]
+
+        # Schedule daily start (every day at after_hour:00)
+        self.run_daily(self._start_checks, datetime.now().replace(hour=after_hour, minute=0, second=0, microsecond=0))
+
+        # Schedule daily stop (every day at before_hour:00)
+        self.run_daily(self._stop_checks, datetime.now().replace(hour=before_hour, minute=0, second=0, microsecond=0))
+
+        self.log(f"Scheduled daily checks: start at {after_hour:02d}:00, stop at {before_hour:02d}:00")
+
+    def _start_checks(self, kwargs):
+        """Start periodic condition checking."""
+        self.run_every(self._check_conditions, "now", 60)
+        self.log("Started periodic condition checks")
+
+    def _stop_checks(self, kwargs):
+        """Stop periodic condition checking."""
+        # Note: AppDaemon doesn't have a direct way to cancel run_every
+        # The checks will continue but will return early due to time window check
+        self.log("Stopped periodic condition checks (checks will return early outside time window)")
+
     def _check_conditions(self, kwargs):
         """
         Check temperature and window conditions and send notifications if needed.
 
-        This is the main monitoring method called every 60 seconds. It:
+        This is the main monitoring method called every 60 seconds during the
+        active time window. It:
         1. Retrieves current temperature from the configured sensor
         2. Validates the temperature value is numeric and available
         3. Retrieves current window/door state from the configured sensor

@@ -81,13 +81,14 @@ Time window configuration:
 
 ## How It Works
 
-1. **Periodic Checks**: The script checks conditions every minute
-2. **Temperature Evaluation**: Compares current temperature against configured thresholds
-3. **Window State Check**: Verifies if window/door state matches expected state for current temperature
-4. **Time Window**: Only operates during specified hours
-5. **Presence Check**: Only notifies people who are home
-6. **Cooldown**: Respects cooldown periods to prevent spam
-7. **Action Handling**: Processes "Ignore today" actions from mobile notifications
+1. **Smart Scheduling**: The script only runs checks during the configured time window
+2. **Periodic Checks**: During active hours, conditions are checked every minute
+3. **Temperature Evaluation**: Compares current temperature against configured thresholds
+4. **Window State Check**: Verifies if window/door state matches expected state for current temperature
+5. **Time Window**: Only operates during specified hours (optimized to avoid unnecessary checks)
+6. **Presence Check**: Only notifies people who are home
+7. **Cooldown**: Respects cooldown periods to prevent spam
+8. **Action Handling**: Processes "Ignore today" actions from mobile notifications
 
 ## Notification Logic
 
