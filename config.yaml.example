@@ -24,8 +24,8 @@ open_window_notification:
   # Window/door sensor configuration
   window:
     sensor: binary_sensor.bedroom_window  # Binary sensor entity ID
-    below: on                            # Expected state when temp < below_threshold
-    above: off                           # Expected state when temp >= above_threshold
+    below: "on"                           # Expected state when temp < below_threshold
+    above: "off"                          # Expected state when temp >= above_threshold
 
   # Notification message configuration
   messages:
