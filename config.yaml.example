@@ -1,13 +1,40 @@
-example_motion:
-  module: i1_motion_lights
-  class: GenericMotion
-  sensor: binary_sensor.motion_sensor_home_security_motion_detection
-  state_id: unique_state_id_for_example 
-  light:
-    - light.lamp_1
-    - light.lamp_2
-  from: "off"
-  to: "on"
-  sunup: True # also when sun is up
-  timeout: 1200 # time to turn off again
+# Temperature and Window Notification Configuration Example
+# This app monitors temperature and window/door sensors, sending notifications
+# when conditions require user action (e.g., open window when too hot)
+open_window_notification:
+  module: i1_open_window
+  class: TemperatureWindowNotification
 
+  # List of people to notify - at least one person required
+  persons:
+    - name: Lars                        # Human-readable name (optional)
+      notify: mobile_app_iphone_28      # Notification service (required)
+      tracker: device_tracker.iphone_28 # Device tracker for presence detection (optional)
+
+  # Legacy presence configuration (not used by current version)
+  presence:
+    - device_tracker.iphone_28
+
+  # Temperature sensor configuration
+  temperature:
+    sensor: sensor.bedroom_temperature  # Temperature sensor entity ID
+    below: 16                          # Temperature threshold for "too cold" (°C)
+    above: 20                          # Temperature threshold for "too warm" (°C)
+
+  # Window/door sensor configuration
+  window:
+    sensor: binary_sensor.bedroom_window  # Binary sensor entity ID
+    below: on                            # Expected state when temp < below_threshold
+    above: off                           # Expected state when temp >= above_threshold
+
+  # Notification message configuration
+  messages:
+    below: "Close bedroom window"        # Message when temp too low
+    above: "Open bedroom window"         # Message when temp too high
+    title: "Bedroom temp"                # Notification title
+    cooldown: 1800                      # Cooldown period in seconds (30 minutes)
+
+  # Time window configuration (24-hour format)
+  when:
+    after: 15   # Start monitoring at 15:00 (3 PM)
+    before: 22  # Stop monitoring at 22:00 (10 PM)
