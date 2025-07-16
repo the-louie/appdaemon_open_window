@@ -11,6 +11,7 @@ A cleaned up and improved AppDaemon script for Home Assistant that monitors temp
 - **Presence Detection**: Only sends notifications to people who are home
 - **Cooldown System**: Prevents notification spam with configurable cooldown periods
 - **Action Buttons**: Mobile notifications include "Ignore today" action button
+- **Weather Integration**: Suppresses open window notifications when rain is forecasted (MET.no nowcast)
 - **Error Handling**: Robust error handling for sensor failures and invalid states
 - **Configuration Validation**: Comprehensive type and value validation on startup
 - **PEP 8 Compliant**: Follows Python style guidelines for maintainability
@@ -43,6 +44,7 @@ bedroom_temperature_notification:
   when:
     after: 15
     before: 22
+  nowcast_sensor: sensor.met_nowcast_precipitation  # Optional: MET.no nowcast precipitation sensor
 ```
 
 ## Configuration Options
@@ -79,6 +81,11 @@ Time window configuration:
 - `before`: Hour to stop monitoring (required, integer 0-23)
 - **Note**: `after` and `before` cannot be the same value
 
+### `nowcast_sensor`
+Weather integration (optional):
+- `nowcast_sensor`: Entity ID of MET.no nowcast precipitation sensor (optional, string)
+- **Note**: When configured, suppresses open window notifications if rain is detected or forecasted within 30 minutes
+
 ## How It Works
 
 1. **Smart Scheduling**: The script only runs checks during the configured time window
@@ -93,8 +100,10 @@ Time window configuration:
 ## Notification Logic
 
 The script sends notifications when:
-- Temperature ≥ `above` threshold AND window state ≠ `above` expected state
+- Temperature ≥ `above` threshold AND window state ≠ `above` expected state (unless rain is forecasted)
 - Temperature < `below` threshold AND window state ≠ `below` expected state
+
+**Weather Integration**: If a `nowcast_sensor` is configured, the app checks for current precipitation and forecasts up to 30 minutes ahead. Open window notifications are suppressed if rain is detected or expected.
 
 ## Improvements Made
 
@@ -178,6 +187,8 @@ appdaemon:
 ```
 
 ## License
+
+Copyright (c) 2025, the_louie
 
 This project is licensed under the BSD 2-Clause License - see the [LICENSE](LICENSE) file for details.
 

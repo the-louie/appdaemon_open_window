@@ -11,10 +11,6 @@ open_window_notification:
       notify: mobile_app_iphone_28      # Notification service (required)
       tracker: device_tracker.iphone_28 # Device tracker for presence detection (optional)
 
-  # Legacy presence configuration (not used by current version)
-  presence:
-    - device_tracker.iphone_28
-
   # Temperature sensor configuration
   temperature:
     sensor: sensor.bedroom_temperature  # Temperature sensor entity ID
@@ -38,3 +34,6 @@ open_window_notification:
   when:
     after: 15   # Start monitoring at 15:00 (3 PM)
     before: 22  # Stop monitoring at 22:00 (10 PM)
+
+  # Weather integration (optional) - suppresses open window notifications if rain is forecasted
+  nowcast_sensor: weather.met_no_nowcast_met_nowcast  # MET.no nowcast precipitation sensor
