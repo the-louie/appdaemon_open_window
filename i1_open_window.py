@@ -53,19 +53,29 @@ class TemperatureWindowNotification(hass.Hass):
             self.nowcast_sensor = self.args.get("nowcast_sensor")
 
             # Validate required sections and keys
-            sections = {
-                "temperature": ["sensor", "below", "above"],
-                "window": ["sensor", "below", "above"],
-                "messages": ["below", "above", "title", "cooldown"],
-                "when": ["after", "before"]
-            }
-            for section, keys in sections.items():
-                config = getattr(self, f"{section}_config")
-                if not config:
-                    raise ValueError(f"Missing required configuration: {section}")
-                for key in keys:
-                    if key not in config:
-                        raise ValueError(f"Missing required key '{key}' in {section} configuration")
+            if not self.temperature_config:
+                raise ValueError("Missing required configuration: temperature")
+            for key in ["sensor", "below", "above"]:
+                if key not in self.temperature_config:
+                    raise ValueError(f"Missing required key '{key}' in temperature configuration")
+
+            if not self.window_config:
+                raise ValueError("Missing required configuration: window")
+            for key in ["sensor", "below", "above"]:
+                if key not in self.window_config:
+                    raise ValueError(f"Missing required key '{key}' in window configuration")
+
+            if not self.messages_config:
+                raise ValueError("Missing required configuration: messages")
+            for key in ["below", "above", "title", "cooldown"]:
+                if key not in self.messages_config:
+                    raise ValueError(f"Missing required key '{key}' in messages configuration")
+
+            if not self.time_config:
+                raise ValueError("Missing required configuration: when")
+            for key in ["after", "before"]:
+                if key not in self.time_config:
+                    raise ValueError(f"Missing required key '{key}' in when configuration")
 
             # Validate types and values
             if self.nowcast_sensor is not None and not isinstance(self.nowcast_sensor, str):
