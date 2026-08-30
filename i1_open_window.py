@@ -52,6 +52,14 @@ class TemperatureWindowNotification(hass.Hass):
             self.persons = self.args.get("persons", [])
             self.nowcast_sensor = self.args.get("nowcast_sensor")
 
+            # Android companion-app delivery settings. The default HA notification channel
+            # can be disabled on the phone, which silently discards every notification sent
+            # to it - HA reports success and nothing arrives. Sending on a dedicated channel
+            # keeps these alerts independent of that setting and lets them be muted on
+            # their own without affecting other apps. See backlog T-52.
+            self.notification_channel = self.args.get("notification_channel", "temperature_alerts")
+            self.notification_priority = self.args.get("notification_priority", "high")
+
             # Validate required sections and keys
             if not self.temperature_config:
                 raise ValueError("Missing required configuration: temperature")
@@ -240,6 +248,22 @@ class TemperatureWindowNotification(hass.Hass):
         self._precipitation_cache = {"result": False, "timestamp": now}
         return False
 
+    def _notification_data(self) -> dict:
+        """Build the companion-app data block for a notification.
+
+        Returns the Android delivery hints every notify call in this app must carry:
+        a dedicated channel, plus priority/ttl so the message is not deferred by Doze.
+        Returns an empty dict if no channel is configured, so the caller can pass it
+        unconditionally.
+        """
+        if not self.notification_channel:
+            return {}
+        data = {"channel": self.notification_channel}
+        if self.notification_priority:
+            data["priority"] = self.notification_priority
+            data["ttl"] = 0
+        return data
+
     def _send_notification(self, message: str, temperature: float):
         """Send notification to all persons at home."""
         title = self.messages_config["title"]
@@ -266,7 +290,9 @@ class TemperatureWindowNotification(hass.Hass):
                         "title": "Ignore today"
                     }]
                 }
-                self.call_service(f"notify/{notify_service}", message=full_message, data=action_data)
+                # Channel keys spread LAST so a future edit to action_data cannot
+                # silently override them and reintroduce the dropped-notification bug.
+                self.call_service(f"notify/{notify_service}", message=full_message, data={**action_data, **self._notification_data()})
                 self._message_cooldowns[notify_service] = time.time()
                 self.log(f"Notification sent to {notify_service}")
             except Exception as e:
