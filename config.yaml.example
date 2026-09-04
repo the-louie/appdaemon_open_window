@@ -37,3 +37,21 @@ open_window_notification:
 
   # Weather integration (optional) - suppresses open window notifications if rain is forecasted
   nowcast_sensor: weather.met_no_nowcast_met_nowcast  # MET.no nowcast precipitation sensor
+
+  # ── Android delivery: which channel these alerts arrive on (T-52) ────
+  #
+  # The companion app's default notification channel can be switched off on the
+  # phone, and when it is, Home Assistant still reports every notification as
+  # sent while Android discards it. That failure is completely silent at both
+  # ends -- it was found by experiment, not from a log. Naming a dedicated
+  # channel keeps these alerts independent of that setting, and lets them be
+  # muted on their own without silencing every other app.
+  #
+  # `priority: high` plus `ttl: 0` stops Doze deferring them. Reserve high for
+  # alerts that genuinely warrant waking the device; for informational ones the
+  # right answer is not normal priority (which is what silently fails today) but
+  # not sending, or a digest.
+  #
+  # Both are optional. Shown here with the defaults the code applies.
+  # notification_channel: temperature_alerts
+  # notification_priority: high
