@@ -39,6 +39,7 @@ import appdaemon.plugins.hass.hassapi as hass
 import json
 import os
 
+import ha_states
 import notification_policy as policy
 
 
@@ -196,7 +197,7 @@ class TemperatureWindowNotification(hass.Hass):
         """Check temperature and window conditions and send notifications if needed."""
         # Get temperature
         temp_state = self.get_state(self.temperature_config["sensor"])
-        if temp_state in ["unavailable", "unknown", None]:
+        if ha_states.not_reporting(temp_state):
             return
         try:
             temperature = float(temp_state)
@@ -241,7 +242,7 @@ class TemperatureWindowNotification(hass.Hass):
             return self._precipitation_cache["result"]
 
         state = self.get_state(self.nowcast_sensor, attribute=None)
-        if state in [None, "unavailable", "unknown"]:
+        if ha_states.not_reporting(state):
             self._precipitation_cache = {"result": False, "timestamp": now}
             return False
 
