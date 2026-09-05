@@ -167,13 +167,13 @@ class TemperatureWindowNotification(hass.Hass):
             self.listen_event(self._handle_notification_action, "mobile_app_notification_action")
 
             # Schedule checks
-            current_hour = datetime.now().hour
+            current_hour = self.get_now().hour
             after_hour, before_hour = self.time_config["after"], self.time_config["before"]
             if after_hour <= current_hour < before_hour:
                 self.run_every(self._check_conditions, "now", 60)
                 self.log("Started periodic checks (within active time window)")
             else:
-                now = datetime.now()
+                now = self.get_now()
                 after_hour = self.time_config["after"]
                 if now.hour < after_hour:
                     next_check = now.replace(hour=after_hour, minute=0, second=0, microsecond=0)
@@ -182,7 +182,7 @@ class TemperatureWindowNotification(hass.Hass):
                 self.run_at(self._start_checks, next_check)
 
             after_hour = self.time_config["after"]
-            self.run_daily(self._start_checks, datetime.now().replace(hour=after_hour, minute=0, second=0, microsecond=0))
+            self.run_daily(self._start_checks, f"{after_hour:02d}:00:00")
 
             self.log("TemperatureWindowNotification initialized successfully")
         except ValueError as e:
@@ -258,7 +258,10 @@ class TemperatureWindowNotification(hass.Hass):
             self._precipitation_cache = {"result": False, "timestamp": now}
             return False
 
-        current_time = datetime.now()
+        # Aware, in HA's zone: forecast datetimes parse aware ('Z' becomes +00:00),
+        # and aware-minus-naive raised TypeError into the bare except below --
+        # every Z-suffixed entry was silently skipped (found in S8-05).
+        current_time = self.get_now()
         for entry in forecast:
             dt_str = entry.get("datetime")
             precip = entry.get("precipitation")
@@ -307,7 +310,7 @@ class TemperatureWindowNotification(hass.Hass):
                 continue
 
             send, reason = policy.decide(
-                notify_service, time.time(), datetime.now().hour,
+                notify_service, time.time(), self.get_now().hour,
                 self._message_cooldowns,
                 quiet_start=self.quiet_start, quiet_end=self.quiet_end,
                 repeat_after=cooldown_seconds,
@@ -373,7 +376,7 @@ class TemperatureWindowNotification(hass.Hass):
         action_type, notify_service = action_parts[1], action_parts[2]
         if action_type == "ignore":
             try:
-                now = datetime.now()
+                now = self.get_now()
                 tomorrow_start = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
                 self._message_cooldowns[notify_service] = tomorrow_start.timestamp()
                 self._save_state()
