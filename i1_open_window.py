@@ -36,6 +36,11 @@ from typing import Dict, Any
 
 import appdaemon.plugins.hass.hassapi as hass
 
+import json
+import os
+
+import notification_policy as policy
+
 
 class TemperatureWindowNotification(hass.Hass):
     """AppDaemon app that monitors temperature and window/door sensors and sends notifications when conditions are met."""
@@ -133,7 +138,28 @@ class TemperatureWindowNotification(hass.Hass):
                     raise ValueError(f"person {i}.tracker must be a string")
 
             # Initialize state
-            self._message_cooldowns: Dict[str, float] = {}
+            # Policy D2. Two halves were missing:
+            #
+            #   Quiet hours -- there were none. The 30-minute cooldown means a
+            #   window left open on a cold night re-notified every half hour
+            #   until dawn.
+            #
+            #   Persistence -- this dict died with the process. Every AppDaemon
+            #   restart cleared every cooldown, and with it every "Ignore
+            #   today": the action promises silence until tomorrow and quietly
+            #   delivered silence until the next restart.
+            #
+            # `decide()` rather than `apply()`, deliberately. apply() drops keys
+            # absent from the active set, which would erase the ignore of anyone
+            # who happened to be away when the check ran. decide() does not
+            # mutate, so entries survive a pass that skipped their owner.
+            self.quiet_hours = self.args.get("quiet_hours", True)
+            self.quiet_start = self.args.get("quiet_start", policy.DEFAULT_QUIET_START)
+            self.quiet_end = self.args.get("quiet_end", policy.DEFAULT_QUIET_END)
+            self.state_file = self.args.get(
+                "state_file", f"/conf/open_window_{self.name}.json"
+            )
+            self._message_cooldowns: Dict[str, float] = self._load_state()
             self._precipitation_cache = {"result": False, "timestamp": 0}
 
             # Set up event listeners and scheduling
@@ -275,12 +301,19 @@ class TemperatureWindowNotification(hass.Hass):
             if not notify_service:
                 continue
 
-            last_notification = self._message_cooldowns.get(notify_service, 0)
-            if time.time() - last_notification < cooldown_seconds:
-                continue
-
             tracker = person.get("tracker")
             if tracker and self.get_state(tracker) != "home":
+                continue
+
+            send, reason = policy.decide(
+                notify_service, time.time(), datetime.now().hour,
+                self._message_cooldowns,
+                quiet_start=self.quiet_start, quiet_end=self.quiet_end,
+                repeat_after=cooldown_seconds,
+            )
+            if not send:
+                self.log(f"Holding notification to {notify_service}: {reason}",
+                         level="DEBUG")
                 continue
 
             try:
@@ -294,10 +327,37 @@ class TemperatureWindowNotification(hass.Hass):
                 # silently override them and reintroduce the dropped-notification bug.
                 self.call_service(f"notify/{notify_service}", message=full_message, data={**action_data, **self._notification_data()})
                 self._message_cooldowns[notify_service] = time.time()
+                self._save_state()
                 self.log(f"Notification sent to {notify_service}")
             except Exception as e:
                 line_num = traceback.extract_tb(e.__traceback__)[-1].lineno
                 self.log(f"Failed to send notification to {notify_service}: {e} (line {line_num})", level="ERROR")
+
+    def _load_state(self):
+        """Read persisted cooldowns. Missing or corrupt starts empty."""
+        try:
+            with open(self.state_file, encoding="utf-8") as fh:
+                data = json.load(fh)
+            if not isinstance(data, dict):
+                return {}
+            return {k: v for k, v in data.items() if isinstance(v, (int, float))}
+        except FileNotFoundError:
+            return {}
+        except (ValueError, OSError) as e:
+            self.log(f"Cooldown state unreadable, starting fresh: {e}", level="WARNING")
+            return {}
+
+    def _save_state(self):
+        """Persist atomically. Failure must not stop the alert going out."""
+        tmp = f"{self.state_file}.tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(self._message_cooldowns, fh)
+            os.replace(tmp, self.state_file)
+        except OSError as e:
+            self.log(
+                f"Could not persist cooldown state: {e} -- cooldowns and any "
+                f"'Ignore today' will be lost at the next restart", level="WARNING")
 
     def _handle_notification_action(self, event_name: str, data: Dict[str, Any], kwargs):
         """Handle notification action responses from mobile app."""
@@ -315,6 +375,7 @@ class TemperatureWindowNotification(hass.Hass):
                 now = datetime.now()
                 tomorrow_start = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
                 self._message_cooldowns[notify_service] = tomorrow_start.timestamp()
+                self._save_state()
                 self.log(f"Ignore set for {notify_service} until tomorrow")
             except Exception as e:
                 line_num = traceback.extract_tb(e.__traceback__)[-1].lineno

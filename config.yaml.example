@@ -55,3 +55,23 @@ open_window_notification:
   # Both are optional. Shown here with the defaults the code applies.
   # notification_channel: temperature_alerts
   # notification_priority: high
+
+  # ── Policy D2: quiet hours and persisted cooldowns ────────────────────
+  #
+  # Before S5-08b this app had neither. With a 30-minute `cooldown`, a window
+  # left open on a cold night re-notified every half hour until dawn. And the
+  # cooldown dict lived in memory, so every AppDaemon restart cleared it --
+  # including any "Ignore today", which promised silence until tomorrow and
+  # delivered silence until the next restart.
+  #
+  # A FIRST notification is always sent, whatever the hour: an open window on a
+  # cold night is news. Only repeats are held, and holding does not extend the
+  # window, so a held alert lands when quiet hours end rather than a full
+  # cooldown later.
+  quiet_hours: true
+  quiet_start: 22            # hour 0-23, inclusive
+  quiet_end: 7               # hour 0-23, exclusive
+
+  # Where the cooldowns and any "Ignore today" are kept. Outside the app
+  # directory so a redeploy does not wipe them.
+  state_file: /conf/open_window_open_window.json
