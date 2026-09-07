@@ -26,10 +26,14 @@ open_window_notification:
   when:
     after: 15
     before: 22
-  nowcast_sensor: sensor.met_nowcast_precipitation  # Optional: MET.no nowcast precipitation sensor
+  nowcast: true              # rain check via MET.no nowcast API (H-35)
+  # latitude/longitude: optional overrides; defaults to HA's configured home
+  # nowcast_user_agent: identifying UA string per MET.no TOS
 """
 
 import time
+import urllib.request
+from email.utils import parsedate_to_datetime
 import traceback
 from datetime import datetime, timedelta
 from typing import Dict, Any
@@ -56,7 +60,21 @@ class TemperatureWindowNotification(hass.Hass):
             self.messages_config = self.args.get("messages", {})
             self.time_config = self.args.get("when", {})
             self.persons = self.args.get("persons", [])
-            self.nowcast_sensor = self.args.get("nowcast_sensor")
+            # H-35: the rain check calls MET.no's nowcast API directly.
+            # The old nowcast_sensor read the weather entity's `forecast`
+            # attribute, which HA removed in 2024 -- dead ever since.
+            if self.args.get("nowcast_sensor"):
+                self.log("nowcast_sensor is deprecated (H-35): the rain "
+                         "check now calls MET.no nowcast directly; remove "
+                         "the key from the config", level="WARNING")
+            self.nowcast_enabled = bool(self.args.get("nowcast", True))
+            self.nowcast_lat = self.args.get("latitude")
+            self.nowcast_lon = self.args.get("longitude")
+            # MET.no TOS: an identifying User-Agent or requests get
+            # throttled/banned. Overridable for a different contact string.
+            self.nowcast_user_agent = self.args.get(
+                "nowcast_user_agent",
+                "appdaemon-open-window/1.0 (+https://louie.se)")
 
             # Android companion-app delivery settings. The default HA notification channel
             # can be disabled on the phone, which silently discards every notification sent
@@ -92,8 +110,10 @@ class TemperatureWindowNotification(hass.Hass):
                     raise ValueError(f"Missing required key '{key}' in when configuration")
 
             # Validate types and values
-            if self.nowcast_sensor is not None and not isinstance(self.nowcast_sensor, str):
-                raise ValueError("nowcast_sensor must be a string if provided")
+            for key in ("latitude", "longitude"):
+                v = self.args.get(key)
+                if v is not None and not isinstance(v, (int, float)):
+                    raise ValueError(f"{key} must be a number if provided")
             if not isinstance(self.temperature_config["sensor"], str):
                 raise ValueError("temperature.sensor must be a string")
             try:
@@ -161,7 +181,9 @@ class TemperatureWindowNotification(hass.Hass):
                 "state_file", f"/conf/open_window_{self.name}.json"
             )
             self._message_cooldowns: Dict[str, float] = self._load_state()
-            self._precipitation_cache = {"result": False, "timestamp": 0}
+            # valid_until honours MET.no's Expires header with a 300s floor
+            # (nowcast updates every 5 minutes; hammering is a ban risk).
+            self._precipitation_cache = {"result": False, "valid_until": 0.0}
 
             # Set up event listeners and scheduling
             self.listen_event(self._handle_notification_action, "mobile_app_notification_action")
@@ -231,52 +253,108 @@ class TemperatureWindowNotification(hass.Hass):
 
 
 
-    def _precipitation_expected(self) -> bool:
-        """Return True if precipitation is detected or forecasted within 30 minutes, else False."""
-        if not self.nowcast_sensor:
-            return False
+    def _resolve_coords(self):
+        """House coordinates: explicit args win, else HA's own config via
+        the plugin (so no coordinates need to live in any tracked file)."""
+        if self.nowcast_lat is not None and self.nowcast_lon is not None:
+            return float(self.nowcast_lat), float(self.nowcast_lon)
+        try:
+            cfg = self.get_plugin_config() or {}
+            return float(cfg["latitude"]), float(cfg["longitude"])
+        except Exception as e:
+            self.log(f"Could not resolve coordinates for nowcast: {e}",
+                     level="WARNING")
+            return None, None
 
-        # Cache result for 5 minutes to avoid repeated API calls
+    @staticmethod
+    def _parse_nowcast(data, now_aware, horizon_seconds=1800):
+        """True/False/None from a nowcast payload: rain in the horizon,
+        no rain, or unknown (area not radar-covered / shape unexpected).
+
+        Pure so the response shape is pinned by tests (H-35 DoD).
+        """
+        try:
+            timeseries = data["properties"]["timeseries"]
+        except (KeyError, TypeError):
+            return None
+        saw_rate = False
+        for entry in timeseries:
+            try:
+                t = datetime.fromisoformat(
+                    entry["time"].replace("Z", "+00:00"))
+            except (KeyError, ValueError, TypeError, AttributeError):
+                continue
+            delta = (t - now_aware).total_seconds()
+            if not (-300 <= delta <= horizon_seconds):
+                continue
+            details = (entry.get("data", {}).get("instant", {})
+                       .get("details", {}))
+            rate = details.get("precipitation_rate")
+            if rate is None:
+                # precipitation_rate absent = area outside radar coverage
+                continue
+            saw_rate = True
+            if float(rate) > 0:
+                return True
+        return False if saw_rate else None
+
+    def _fetch_nowcast(self, lat, lon):
+        """One nowcast GET. Returns (payload|None, expires_epoch|None)."""
+        url = (f"https://api.met.no/weatherapi/nowcast/2.0/complete"
+               f"?lat={lat:.4f}&lon={lon:.4f}")
+        req = urllib.request.Request(
+            url, headers={"User-Agent": self.nowcast_user_agent})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status == 203:
+                    self.log("MET.no nowcast returned 203: the endpoint "
+                             "version is deprecated -- check for 2.x "
+                             "successor", level="WARNING")
+                expires_epoch = None
+                expires = resp.headers.get("Expires")
+                if expires:
+                    try:
+                        expires_epoch = parsedate_to_datetime(
+                            expires).timestamp()
+                    except (TypeError, ValueError):
+                        pass
+                return json.load(resp), expires_epoch
+        except Exception as e:
+            self.log(f"MET.no nowcast fetch failed: {e}", level="WARNING")
+            return None, None
+
+    def _precipitation_expected(self) -> bool:
+        """True if the MET.no nowcast shows rain within 30 minutes.
+
+        Unknown (fetch failed, area uncovered, shape change) fails toward
+        the old behaviour: no rain claim, window notification proceeds.
+        Results cache until MET.no's Expires or 300s, whichever is later
+        -- failures cache too, so an outage cannot turn into hammering.
+        """
+        if not self.nowcast_enabled:
+            return False
         now = time.time()
-        if now - self._precipitation_cache["timestamp"] < 300:
+        if now < self._precipitation_cache["valid_until"]:
             return self._precipitation_cache["result"]
 
-        state = self.get_state(self.nowcast_sensor, attribute=None)
-        if ha_states.not_reporting(state):
-            self._precipitation_cache = {"result": False, "timestamp": now}
-            return False
-
-        try:
-            if float(state) > 0:
-                self._precipitation_cache = {"result": True, "timestamp": now}
-                return True
-        except Exception:
-            pass
-
-        forecast = self.get_state(self.nowcast_sensor, attribute="forecast")
-        if not isinstance(forecast, list):
-            self._precipitation_cache = {"result": False, "timestamp": now}
-            return False
-
-        # Aware, in HA's zone: forecast datetimes parse aware ('Z' becomes +00:00),
-        # and aware-minus-naive raised TypeError into the bare except below --
-        # every Z-suffixed entry was silently skipped (found in S8-05).
-        current_time = self.get_now()
-        for entry in forecast:
-            dt_str = entry.get("datetime")
-            precip = entry.get("precipitation")
-            if dt_str is None or precip is None:
-                continue
-            try:
-                dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-                if 0 <= (dt - current_time).total_seconds() <= 1800 and float(precip) > 0:
-                    self._precipitation_cache = {"result": True, "timestamp": now}
-                    return True
-            except Exception:
-                continue
-
-        self._precipitation_cache = {"result": False, "timestamp": now}
-        return False
+        lat, lon = self._resolve_coords()
+        result = None
+        expires_epoch = None
+        if lat is not None:
+            data, expires_epoch = self._fetch_nowcast(lat, lon)
+            if data is not None:
+                result = self._parse_nowcast(data, self.get_now())
+                if result is None:
+                    self.log("Nowcast gave no precipitation_rate for the "
+                             "window -- treating as unknown, no rain claim",
+                             level="WARNING")
+                else:
+                    self.log(f"Nowcast precipitation within 30 min: "
+                             f"{result}", level="INFO")
+        valid_until = max(now + 300, expires_epoch or 0)
+        self._precipitation_cache = {"result": bool(result),
+                                     "valid_until": valid_until}
+        return bool(result)
 
     def _notification_data(self) -> dict:
         """Build the companion-app data block for a notification.

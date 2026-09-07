@@ -36,7 +36,14 @@ open_window_notification:
     before: 22  # Stop monitoring at 22:00 (10 PM)
 
   # Weather integration (optional) - suppresses open window notifications if rain is forecasted
-  nowcast_sensor: weather.met_no_nowcast_met_nowcast  # MET.no nowcast precipitation sensor
+  # H-35: rain check calls MET.no's nowcast API directly (5-min radar,
+  # ~2h horizon). Coordinates default to HA's configured home; the
+  # User-Agent identifies us per MET.no TOS. Unknown/uncovered fails open
+  # (no rain claim). nowcast_sensor is deprecated and warns if present.
+  nowcast: true
+  # latitude: 0.0
+  # longitude: 0.0
+  # nowcast_user_agent: "appdaemon-open-window/1.0 (+https://louie.se)"
 
   # ── Android delivery: which channel these alerts arrive on (T-52) ────
   #
