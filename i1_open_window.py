@@ -26,6 +26,9 @@ open_window_notification:
   when:
     after: 15
     before: 22
+  co2:                       # optional: CO2 reading(s) added to the "above" message
+    sensors:
+      - sensor.bedroom_co2
   nowcast: true              # rain check via MET.no nowcast API (H-35)
   # latitude/longitude: optional overrides; defaults to HA's configured home
   # nowcast_user_agent: identifying UA string per MET.no TOS
@@ -158,6 +161,13 @@ class TemperatureWindowNotification(hass.Hass):
                 if "tracker" in person and not isinstance(person["tracker"], str):
                     raise ValueError(f"person {i}.tracker must be a string")
 
+            # Optional CO2 sensors. Their readings are appended to the "too warm"
+            # notification -- stuffy air is a second reason to open up. They never
+            # trigger or suppress a notification on their own. A configured sensor
+            # that does not exist is a config error (D1); one that is merely
+            # unavailable at send time is left out of the message.
+            self.co2_sensors = self._parse_co2_sensors(self.args.get("co2"))
+
             # Initialize state
             # Policy D2. Two halves were missing:
             #
@@ -211,6 +221,36 @@ class TemperatureWindowNotification(hass.Hass):
             self.log(f"Configuration error: {e}", level="ERROR")
             raise
 
+    def _parse_co2_sensors(self, co2_config) -> list:
+        """Validate the optional `co2` section. Returns a list of entity ids."""
+        if co2_config is None:
+            return []
+        if not isinstance(co2_config, dict):
+            raise ValueError("co2 must be a mapping with 'sensor' or 'sensors'")
+        sensors = co2_config.get("sensors", co2_config.get("sensor"))
+        if isinstance(sensors, str):
+            sensors = [sensors]
+        if (not isinstance(sensors, list) or not sensors
+                or not all(isinstance(e, str) and e.strip() for e in sensors)):
+            raise ValueError("co2.sensors must be a non-empty list of entity ids")
+        for entity in sensors:
+            if not self.entity_exists(entity):
+                raise ValueError(f"co2 sensor {entity!r} does not exist")
+        return sensors
+
+    def _co2_text(self) -> str:
+        """', CO₂ 895 ppm' for the reporting CO2 sensors, or '' if none report."""
+        readings = []
+        for entity in self.co2_sensors:
+            state = self.get_state(entity)
+            if ha_states.not_reporting(state):
+                continue
+            try:
+                readings.append(str(round(float(state))))
+            except (ValueError, TypeError):
+                continue
+        return f", CO₂ {'/'.join(readings)} ppm" if readings else ""
+
     def _start_checks(self, kwargs):
         """Start periodic condition checking."""
         self.run_every(self._check_conditions, "now", 60)
@@ -240,8 +280,9 @@ class TemperatureWindowNotification(hass.Hass):
                 self.log("Skipping open window notification due to precipitation forecast")
                 return
             message = self.messages_config["above"]
-            self.log(f"ALERT: {message}")
-            self._send_notification(message, temperature)
+            co2_text = self._co2_text()
+            self.log(f"ALERT: {message}{co2_text}")
+            self._send_notification(message, temperature, co2_text)
             return
 
         # Check if temperature is too low and window should be closed but isn't
@@ -372,10 +413,10 @@ class TemperatureWindowNotification(hass.Hass):
             data["ttl"] = 0
         return data
 
-    def _send_notification(self, message: str, temperature: float):
+    def _send_notification(self, message: str, temperature: float, co2_text: str = ""):
         """Send notification to all persons at home."""
         title = self.messages_config["title"]
-        full_message = f"{message} ({temperature}°C)"
+        full_message = f"{message} ({temperature}°C{co2_text})"
         cooldown_seconds = self.messages_config["cooldown"]
 
         for person in self.persons:

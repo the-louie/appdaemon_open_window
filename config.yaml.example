@@ -23,6 +23,15 @@ open_window_notification:
     below: "off"                           # Expected state when temp < below_threshold
     above: "on"                          # Expected state when temp >= above_threshold
 
+  # CO2 sensors (optional). Their readings are added to the "above" (too warm)
+  # message, e.g. "Open bedroom window (21.3°C, CO₂ 1150 ppm)". They never send or
+  # hold a notification by themselves. `sensor: one.entity` also works. A listed
+  # sensor that does not exist stops the app at startup (D1); one that is
+  # unavailable when the message goes out is left out of it.
+  # co2:
+  #   sensors:
+  #     - sensor.bedroom_co2
+
   # Notification message configuration
   messages:
     below: "Close bedroom window"        # Message when temp too low
