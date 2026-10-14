@@ -17,7 +17,11 @@ open_window_notification:
     below: 16                          # Temperature threshold for "too cold" (°C)
     above: 20                          # Temperature threshold for "too warm" (°C)
 
-  # Window/door sensor configuration
+  # Window/door sensor configuration. OPTIONAL: leave the whole section out for a
+  # room with no sensor. The app then sends `messages.above` on temperature alone
+  # (it cannot see the window is already open, so it repeats on the cooldown until
+  # the room cools or "Ignore today" is tapped), and there is no "too cold" case,
+  # so temperature.below and messages.below are not needed either.
   window:
     sensor: binary_sensor.bedroom_window  # Binary sensor entity ID
     below: "off"                           # Expected state when temp < below_threshold

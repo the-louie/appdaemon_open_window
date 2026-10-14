@@ -87,22 +87,32 @@ class TemperatureWindowNotification(hass.Hass):
             self.notification_channel = self.args.get("notification_channel", "temperature_alerts")
             self.notification_priority = self.args.get("notification_priority", "high")
 
-            # Validate required sections and keys
+            # Validate required sections and keys.
+            #
+            # `window` is optional. A room with no window sensor still gets the
+            # "too warm, open up" notification, sent on temperature alone: the app
+            # cannot see that the window is already open, so it repeats on the
+            # cooldown until the room cools or the person taps "Ignore today".
+            # Without a sensor there is no "too cold, close it" case -- nothing
+            # says the window is open -- so `below` is only required with one.
+            self.has_window = bool(self.window_config)
+            temp_keys = ["sensor", "below", "above"] if self.has_window else ["sensor", "above"]
+            message_keys = ["below", "above", "title", "cooldown"] if self.has_window else ["above", "title", "cooldown"]
+
             if not self.temperature_config:
                 raise ValueError("Missing required configuration: temperature")
-            for key in ["sensor", "below", "above"]:
+            for key in temp_keys:
                 if key not in self.temperature_config:
                     raise ValueError(f"Missing required key '{key}' in temperature configuration")
 
-            if not self.window_config:
-                raise ValueError("Missing required configuration: window")
-            for key in ["sensor", "below", "above"]:
-                if key not in self.window_config:
-                    raise ValueError(f"Missing required key '{key}' in window configuration")
+            if self.has_window:
+                for key in ["sensor", "below", "above"]:
+                    if key not in self.window_config:
+                        raise ValueError(f"Missing required key '{key}' in window configuration")
 
             if not self.messages_config:
                 raise ValueError("Missing required configuration: messages")
-            for key in ["below", "above", "title", "cooldown"]:
+            for key in message_keys:
                 if key not in self.messages_config:
                     raise ValueError(f"Missing required key '{key}' in messages configuration")
 
@@ -120,17 +130,21 @@ class TemperatureWindowNotification(hass.Hass):
             if not isinstance(self.temperature_config["sensor"], str):
                 raise ValueError("temperature.sensor must be a string")
             try:
-                below, above = float(self.temperature_config["below"]), float(self.temperature_config["above"])
-                if below >= above:
-                    raise ValueError("temperature.below must be less than temperature.above")
-                self.temperature_config["below"], self.temperature_config["above"] = below, above
+                above = float(self.temperature_config["above"])
+                below = float(self.temperature_config["below"]) if "below" in self.temperature_config else None
+                self.temperature_config["above"] = above
+                if below is not None:
+                    self.temperature_config["below"] = below
             except (ValueError, TypeError):
                 raise ValueError("temperature.below and temperature.above must be numbers")
-            if not isinstance(self.window_config["sensor"], str):
-                raise ValueError("window.sensor must be a string")
-            if self.window_config["below"] not in ["on", "off"] or self.window_config["above"] not in ["on", "off"]:
-                raise ValueError("window.below and window.above must be 'on' or 'off'")
-            for field in ["below", "above", "title"]:
+            if below is not None and below >= above:
+                raise ValueError("temperature.below must be less than temperature.above")
+            if self.has_window:
+                if not isinstance(self.window_config["sensor"], str):
+                    raise ValueError("window.sensor must be a string")
+                if self.window_config["below"] not in ["on", "off"] or self.window_config["above"] not in ["on", "off"]:
+                    raise ValueError("window.below and window.above must be 'on' or 'off'")
+            for field in [k for k in message_keys if k != "cooldown"]:
                 if not isinstance(self.messages_config[field], str) or not self.messages_config[field].strip():
                     raise ValueError(f"messages.{field} must be a non-empty string")
             try:
@@ -264,6 +278,18 @@ class TemperatureWindowNotification(hass.Hass):
         try:
             temperature = float(temp_state)
         except (ValueError, TypeError):
+            return
+
+        if not self.has_window:
+            # Temperature alone: no sensor says the window is already open.
+            if temperature >= self.temperature_config["above"]:
+                if self._precipitation_expected():
+                    self.log("Skipping open window notification due to precipitation forecast")
+                    return
+                message = self.messages_config["above"]
+                co2_text = self._co2_text()
+                self.log(f"ALERT: {message}{co2_text}")
+                self._send_notification(message, temperature, co2_text)
             return
 
         # Get window state
