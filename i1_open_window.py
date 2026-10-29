@@ -8,8 +8,7 @@ open_window_notification:
   class: TemperatureWindowNotification
   persons:
     - name: Lars
-      notify: mobile_app_iphone_28
-      tracker: device_tracker.iphone_28
+      notify: mobile_app_iphone_28    # gated by irisone.presence_* (T-69); no tracker key
   temperature:
     sensor: sensor.bedroom_temperature
     below: 16
@@ -47,6 +46,7 @@ import json
 import os
 
 import ha_states
+import irisone_bus
 import notification_policy as policy
 
 
@@ -172,8 +172,13 @@ class TemperatureWindowNotification(hass.Hass):
                     raise ValueError(f"person {i}.notify must be a non-empty string")
                 if "name" in person and not isinstance(person["name"], str):
                     raise ValueError(f"person {i}.name must be a string")
-                if "tracker" in person and not isinstance(person["tracker"], str):
-                    raise ValueError(f"person {i}.tracker must be a string")
+                if "tracker" in person:
+                    # T-69 / IQ-15: the per-app tracker gate dropped every message,
+                    # urgent or not, silently, on any state but exactly "home".
+                    # Presence now comes from irisone.presence_*. Fail loud (D1) so a
+                    # stale config cannot look like it still gates.
+                    raise ValueError(f"person {i}.tracker was removed (T-69): presence comes "
+                                     f"from irisone.presence_*; delete the key")
 
             # Optional CO2 sensors. Their readings are appended to the "too warm"
             # notification -- stuffy air is a second reason to open up. They never
@@ -205,6 +210,14 @@ class TemperatureWindowNotification(hass.Hass):
                 "state_file", f"/conf/open_window_{self.name}.json"
             )
             self._message_cooldowns: Dict[str, float] = self._load_state()
+            # (kind, target) -> presence `since` of the last logged drop (O3).
+            self._drop_logged: Dict[tuple, Any] = {}
+            # A-71.5: AppDaemon puts every app dir on one import path; an older
+            # copy of a shared module elsewhere can win. Fail at start-up, where
+            # the watchdog sees it, not with AttributeError at the first send.
+            if not hasattr(policy, "should_notify") or not hasattr(irisone_bus, "presence_for_target"):
+                raise RuntimeError(f"stale shared module on the import path: "
+                                   f"{policy.__file__}, {irisone_bus.__file__}")
             # valid_until honours MET.no's Expires header with a 300s floor
             # (nowcast updates every 5 minutes; hammering is a ban risk).
             self._precipitation_cache = {"result": False, "valid_until": 0.0}
@@ -289,7 +302,7 @@ class TemperatureWindowNotification(hass.Hass):
                 message = self.messages_config["above"]
                 co2_text = self._co2_text()
                 self.log(f"ALERT: {message}{co2_text}")
-                self._send_notification(message, temperature, co2_text)
+                self._send_notification("above", message, temperature, co2_text)
             return
 
         # Get window state
@@ -308,14 +321,14 @@ class TemperatureWindowNotification(hass.Hass):
             message = self.messages_config["above"]
             co2_text = self._co2_text()
             self.log(f"ALERT: {message}{co2_text}")
-            self._send_notification(message, temperature, co2_text)
+            self._send_notification("above", message, temperature, co2_text)
             return
 
         # Check if temperature is too low and window should be closed but isn't
         if temperature < temp_below and window_open != window_below:
             message = self.messages_config["below"]
             self.log(f"ALERT: {message}")
-            self._send_notification(message, temperature)
+            self._send_notification("below", message, temperature)
             return
 
 
@@ -439,19 +452,32 @@ class TemperatureWindowNotification(hass.Hass):
             data["ttl"] = 0
         return data
 
-    def _send_notification(self, message: str, temperature: float, co2_text: str = ""):
-        """Send notification to all persons at home."""
+    def _send_notification(self, kind: str, message: str, temperature: float, co2_text: str = ""):
+        """Send to every person, minus non-urgent drops for anyone away.
+
+        Both messages this app sends are NON_URGENT (owner, IQ-21 2026-10-29:
+        "open, it's warm" and "close the balcony door, it's cold" alike). The
+        presence gate runs before D2 and a drop never touches the cooldown, so
+        a condition still true when the person comes home goes out at the next
+        60 s check (IQ-13).
+        """
         title = self.messages_config["title"]
         full_message = f"{message} ({temperature}°C{co2_text})"
         cooldown_seconds = self.messages_config["cooldown"]
+        domain = self.get_state(irisone_bus.DOMAIN)
+        now_epoch = time.time()
 
         for person in self.persons:
             notify_service = person.get("notify")
             if not notify_service:
                 continue
 
-            tracker = person.get("tracker")
-            if tracker and self.get_state(tracker) != "home":
+            in_home, since = irisone_bus.presence_for_target(domain, notify_service, now_epoch)
+            gate_send, gate_reason = policy.should_notify(policy.NON_URGENT, in_home)
+            if not gate_send:
+                self._report_gate(kind, notify_service, gate_send, gate_reason)
+                if policy.drop_log_due(kind, notify_service, since, self._drop_logged):
+                    self.log(f"[presence] dropped {self.name}/{kind} to {notify_service}: {gate_reason}")
                 continue
 
             send, reason = policy.decide(
@@ -477,10 +503,19 @@ class TemperatureWindowNotification(hass.Hass):
                 self.call_service(f"notify/{notify_service}", message=full_message, data={**action_data, **self._notification_data()})
                 self._message_cooldowns[notify_service] = time.time()
                 self._save_state()
-                self.log(f"Notification sent to {notify_service}")
+                self._report_gate(kind, notify_service, gate_send, gate_reason)
+                self.log(f"Notification sent to {notify_service} ({gate_reason})")
             except Exception as e:
                 line_num = traceback.extract_tb(e.__traceback__)[-1].lineno
                 self.log(f"Failed to send notification to {notify_service}: {e} (line {line_num})", level="ERROR")
+
+    def _report_gate(self, kind: str, target: str, send: bool, reason: str) -> None:
+        """Count the decision in irisone.notify_gate_stats (IQ-28). Never blocks a send."""
+        try:
+            self.fire_event(irisone_bus.GATE_EVENT, **irisone_bus.gate_event(
+                self.name, kind, target, policy.NON_URGENT, send, reason))
+        except Exception as e:  # the counter is evidence, not a dependency
+            self.log(f"[presence] could not report gate decision: {e}", level="WARNING")
 
     def _load_state(self):
         """Read persisted cooldowns. Missing or corrupt starts empty."""

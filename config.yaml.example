@@ -9,7 +9,8 @@ open_window_notification:
   persons:
     - name: Lars                        # Human-readable name (optional)
       notify: mobile_app_iphone_28      # Notification service (required)
-      tracker: device_tracker.iphone_28 # Device tracker for presence detection (optional)
+      # No tracker key (removed T-69): non-urgent messages are dropped for anyone
+      # irisone.presence_* says is away. The key now refuses to start the app.
 
   # Temperature sensor configuration
   temperature:

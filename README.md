@@ -27,7 +27,6 @@ bedroom_temperature_notification:
   persons:
     - name: "Your Name"
       notify: mobile_app_your_device
-      tracker: device_tracker.your_device
   temperature:
     sensor: sensor.bedroom_temperature
     below: 16
@@ -53,7 +52,7 @@ bedroom_temperature_notification:
 List of people to notify:
 - `name`: Human-readable name (optional, string)
 - `notify`: Notification service (required, string, e.g., `mobile_app_iphone`)
-- `tracker`: Device tracker to check if person is home (optional, string)
+- `tracker`: **removed (T-69).** Presence comes from `irisone.presence_*` (appdaemon_irisone); both messages this app sends are non-urgent and are dropped for a person who is away. A leftover `tracker` key stops the app from starting.
 
 ### `temperature`
 Temperature sensor configuration:
